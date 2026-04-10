@@ -1,0 +1,10 @@
+<form method="post" action="{% url 'set_region' %}" style="display:inline;">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <label><b>Region:</b></label>
+    <select name="region" onchange="this.form.submit()">
+        <option value="CA" {% if request.region == "CA" %}selected{% endif %}>Canada</option>
+        <option value="US" {% if request.region == "US" %}selected{% endif %}>United States</option>
+    </select>
+    </form>
+<hr />

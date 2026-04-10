@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Order Detail</title>
+        
+    </head>
+    <body>
+        {% include "partials/topbar_region.html" %}
+
+        <h1>Order Detail</h1>
+
+        <p><b>Order:</b> {{ order.order_name }}</p>
+        <p><b>Status:</b> {{ order.get_status_display }}</p>
+        <p><b>Due date:</b> {{ order.due_date }}</p>
+        <p><b>Region:</b> {{ order.get_region_display }}</p>
+        <p><b>Public ID:</b> {{ order.public_id }}</p>
+
+        {% if order.order_number %}
+        <p><b>Order number:</b> {{ order.order_number }}</p>
+        {% endif %}
+
+        <p><b>Rush:</b> {{ order.get_rush_order_display }}</p>
+
+        <p><b>Supplier pickup:</b> {{ order.supplier_pickup_labels|join:", " }}</p>
+
+        <p><b>Delivery location:</b> {{ order.get_delivery_location_display }}</p>
+        {% if order.delivery_location == "other" %}
+        <p><b>Delivery other:</b> {{ order.delivery_location_other }}</p>
+        {% endif %}
+
+        <h2>Files</h2>
+        <ul>
+        {% for f in order.files.all %}
+            <li>
+            <a href="{{ f.file.url }}">{{ f.original_name }}</a>
+            ({{ f.size_bytes|filesizeformat }})
+            </li>
+        {% empty %}
+            <li>No files uploaded.</li>
+        {% endfor %}
+        </ul>
+
+        <p>
+        <a href="{% url 'order_status' %}">Back to my orders</a> |
+        <a href="{% url 'make_order' %}">Create another order</a>
+        </p>
+    </body>
+</html>

@@ -1,0 +1,288 @@
+﻿Aquí va el resumen metódico, estructurado y sin saltos de lo que hemos hecho en el proyecto RossRios (migración WordPress → Python/Django). Lo dejo por fases + decisiones + problemas/soluciones, para que sirva como bitácora real.
+
+
+0) Contexto y motivo del proyecto (por qué existe esto)
+RossRios hoy funciona en WordPress, pero empezó a quedarse corto por:
+Problemas con emails/CC (correos secundarios no siempre llegaban).
+Backend lento (timeouts al editar/actualizar órdenes).
+Quejas por límite bajo de subida de archivos.
+Se decidió priorizar RossRios y obviar otros sitios.
+Para no depender de WordPress y reducir futuros “incendios”, arrancamos un rebuild en Django como proyecto paralelo (extra), usando ~10% del tiempo para ir dejando lista una arquitectura más robusta.
+1) Arquitectura que montamos (lo que corre hoy)
+Infra (Docker)
+Proyecto corre completamente en Docker Compose con 4 servicios:
+web (Django)
+worker (Celery)
+db (Postgres)
+redis (broker/result backend de Celery)
+Se usa .env para configuración de:
+Postgres
+Redis
+Email (Brevo SMTP)
+listas de destinatarios admin
+Estructura del repo
+Apps Django:
+orders (núcleo: pedidos, archivos, estados, staff dashboard)
+accounts (signup/login/logout + región CA/US por session)
+config (settings, urls, celery, wsgi/asgi)
+Templates:
+templates/accounts/signup.html
+templates/registration/login.html
+templates/orders/make_order.html
+templates/orders/order_status.html (listado)
+templates/orders/order_detail.html (detalle)
+templates/orders/staff/* (dashboard, orders list, calendar, staff detail)
+Media local:
+media/order_files/...
+media/order_pdfs/<public_id>/client.pdf y admin.pdf
+2) Fase 0 — Infra y encendido (Docker + Django + DB + worker)
+
+
+✅ Hecho
+
+
+Levantamos servicios con Docker Compose.
+Aseguramos que Django lea .env (con django-environ).
+Corregimos errores iniciales de settings:
+NameError: env is not defined por usar env() antes de inicializarlo → se reordenó settings para definir env = environ.Env() y leer .env antes de usar variables.
+Se habilitó Admin de Django y se verificó acceso.
+
+
+Problemas que resolvimos aquí
+
+
+Containers “Up” pero web/worker morían por errores de import/urls/settings.
+Reinicios de Docker/WSL cuando Docker Desktop se quedó loco (más abajo el caso grave).
+3) Fase 1 — Modelo de datos + Admin base
+
+
+✅ Hecho (y usable)
+
+
+Modelo de datos (orders/models.py)
+
+
+Creamos 3 modelos:
+
+
+Order
+Identificador público public_id (UUID).
+Relación customer (usuario que crea la orden).
+Región CA/US.
+Datos cliente: nombre, teléfono, email primario + secundario + tercero + cuarto.
+Datos order: order_name, tax_number, address, order_number.
+Supplier pickup como lista (JSON) con validación (incluye opción None).
+Rush/Standard, due_date.
+Delivery location con opción Other + campo adicional obligatorio si aplica.
+Notas (cliente e internas).
+Status (processing, on_hold, in_production, completed, cancelled).
+URLs de PDFs (client/admin).
+OrderFile
+Archivos asociados a una orden.
+Guarda nombre original, tamaño, usuario que subió.
+Validaciones:
+extensiones permitidas
+tamaño máximo por archivo (inicialmente 3MB)
+OrderStatusHistory
+Historial de cambios de estado: old_status → new_status + quién cambió + timestamp + nota.
+Admin (orders/admin.py)
+Personalizamos admin para que sea operable:
+OrderAdmin con columnas, filtros, búsqueda.
+Inline de archivos (OrderFileInline).
+Form custom para supplier_pickup con checkboxes (CheckboxSelectMultiple) + validación “None no se mezcla”.
+save_model registra OrderStatusHistory cuando cambia status.
+
+
+Problemas que resolvimos aquí
+
+
+AlreadyRegistered (modelo registrado dos veces) → se eliminó registro duplicado.
+Errores de migración por campos non-nullable nuevos:
+cuando agregaste delivery_location, Django pidió default por datos existentes → se manejó ajustando migraciones/valores.
+Error “column does not exist” en admin por cambios en modelo sin migrar correctamente → se ordenó el flujo de makemigrations + migrate.
+4) Fase 2 — Autenticación clientes + permisos
+
+
+✅ Hecho (base funcional)
+
+
+Creamos app accounts y flujo:
+signup/
+login/
+logout/
+Protegimos vistas:
+Cliente solo accede a make-order, order-status, order-detail.
+Staff:
+clientes NO deben entrar a admin staff views.
+staff redirigido a /admin/ si intenta entrar al formulario cliente.
+Resolvimos TemplateDoesNotExist para login:
+organizamos templates y apuntamos login a registration/login.html.
+Se creó usuario cliente de prueba desde shell y se confirmó login.
+
+
+Problemas que resolvimos aquí
+
+
+urlpatterns is not defined / imports rotos en config/urls.py → se simplificó y se ordenaron includes.
+ModuleNotFoundError: accounts.urls → faltaba archivo o rutas mal declaradas.
+SyntaxError fatal en accounts/views.py por import incompleto:
+from django.contrib.auth import → se corrigió a from django.contrib.auth import login.
+Esos errores tumbaban web y worker simultáneamente (porque Celery carga Django).
+5) Fase 3 — Crear orden como cliente (form + flujo completo)
+
+
+✅ Hecho (flujo ya usable)
+
+
+Form (orders/forms.py)
+OrderCreateForm con:
+checkboxes para supplier pickup
+multi upload para archivos (MultipleFileField)
+date picker nativo HTML (type=date)
+validaciones:
+due_date no puede ser pasado
+supplier_pickup obligatorio y “None no se mezcla”
+delivery_location_other obligatorio si delivery_location = other
+Vistas (orders/views.py)
+make_order:
+requiere login
+staff redirige al admin
+crea Order + guarda archivos
+redirige al detalle de la orden creada
+order_status:
+lista órdenes del usuario logueado
+order_detail:
+detalle de una orden, solo si pertenece al usuario
+Templates
+Se corrigió confusión inicial: estabas usando order_status.html como si fuera detalle.
+Se separó:
+order_status.html → listado de órdenes
+order_detail.html → detalle (incluye files y campos importantes)
+
+
+Problemas que resolvimos aquí
+
+
+Campo “opciones” del form que no aparecían / datepicker raro → se ajustó widget y campos fieles a lo requerido.
+Varios ajustes para que el flujo cliente sea “registro → make order → order detail”.
+6) Fase 4 — PDF + Email automático (Celery + Brevo SMTP)
+
+
+✅ Hecho en core (PDFs + emails cliente/admin + retry/log)
+
+
+Celery
+config/celery.py configurado con:
+app.config_from_object(... namespace="CELERY")
+app.autodiscover_tasks()
+Se verificó worker con task ping (y se vieron logs de ejecución).
+PDFs
+Task generate_order_pdfs:
+genera client.pdf y admin.pdf con render_order_pdf(order, kind=...)
+guarda en media/order_pdfs/<public_id>/
+actualiza order.client_pdf_url y order.admin_pdf_url
+con autoretry (backoff, jitter, max_retries=5)
+Confirmamos por consola que PDFs existían (ls /app/media/order_pdfs/...).
+Emails
+Se implementó envío para:
+Cliente: email + PDF cliente (y soporta 1–4 correos)
+Admin: email + PDF admin (destinatarios desde .env)
+Se probó primero con console.EmailBackend (logs imprimían el MIME completo).
+Luego se configuró Brevo SMTP real:
+se agregó .env con credenciales SMTP
+se corrigió que web y worker realmente cargaran variables (verificación con printenv y manage.py shell)
+Se confirmó recepción real en Gmail (admin recibió).
+
+
+Problemas que resolvimos aquí
+
+
+Worker usaba console backend al inicio → settings/env no estaba aplicando como creías → se verificó dentro de contenedores.
+Error SSL TLS (hostname mismatch) en una prueba → se ajustó configuración hasta que SMTP entregó emails reales.
+Admin emails “skipped” cuando ADMIN_ORDER_EMAILS estaba vacío → se corrigió .env y settings para parsear lista.
+Comportamiento raro con Gmail (a veces no llega a un correo específico) → se concluyó que era filtrado/entrega, no lógica (porque logs mostraban envío + otros destinatarios sí recibían).
+7) Fase 5 — Admin dashboard “tipo RossRios” (staff)
+
+
+✅ Hecho (vistas y calendario funcionando)
+
+
+Implementamos:
+
+
+staff_dashboard con accesos tipo:
+View Orders
+Detailed Orders
+Reservation Calendar
+staff_orders:
+tabla de órdenes con filtros (status/region) y búsqueda.
+staff_calendar:
+calendario mensual mostrando órdenes por due_date
+navegación prev/next mes
+click para ver detalle de la orden
+staff_order_detail:
+detalle para staff + link directo a editar en admin (“change” URL)
+
+
+Problemas que resolvimos aquí
+
+
+staff_member_required faltaba import → tumbaba app → se importó correctamente.
+Ajustes de templates para render y navegación.
+8) Fase 6 — CA/US + multiidioma + producción (EN PROGRESO)
+
+
+⏳ En progreso (estamos en la tarea 6.1)
+
+
+Lo que empezamos (6.1 CA/US)
+Objetivo: selector CA/US + persistencia (session/cookie) + “region” consistente al guardar órdenes.
+Se añadió set_region (POST) en accounts.
+Se empezó a forzar order.region = request.region para que no dependa del POST.
+
+
+Errores que aparecieron y se resolvieron
+
+
+transaction no importado → NameError en make-order → se importó from django.db import transaction.
+chain no definido/import → NameError por encadenar tasks → se importó from celery import chain.
+Caídas de web/worker por errores en accounts/urls/views (ya arreglados).
+Error grave de Docker Desktop:
+overlayfs metadata.db input/output error → era infra, no código.
+Se resolvió reiniciando/limpiando el engine (WSL/Docker) y volvió a levantar.
+
+
+Pendiente real de Fase 6
+
+
+Middleware RegionMiddleware (o consolidarlo) para asegurar request.region siempre definido.
+Selector visible en templates (partial topbar).
+Decidir estrategia final:
+por dominio/subdominio (ca./us.) vs selector en session
+Multi-idioma (EN/FR/ES) aún no implementado.
+Producción (S3/Spaces, settings prod, deploy, backups) aún no implementado.
+9) Estado real hoy (qué está hecho vs qué falta)
+✅ Ya funciona end-to-end (core de negocio)
+Cliente se registra/loguea.
+Cliente crea una orden con archivos.
+Se guarda en DB y se ve en admin/staff.
+Worker genera PDFs.
+Se envían emails cliente/admin con PDF adjunto vía Brevo SMTP.
+Staff dashboard y calendario funcionan.
+⚠️ Lo que sigue (prioridad lógica)
+Cerrar 6.1 bien (CA/US persistente y consistente sin romper nada).
+Fase 6.2–6.3: i18n base + i18n en emails/PDFs.
+Revisar “pendiente de Fase 4” (hardening):
+logs más claros, manejo de fallas, plantillas email más pulidas, etc.
+Fase 7 (Front/UI real): hoy la UI es funcional pero “feita”.
+Fase 8 (QA + Release checklist + deploy serio).
+10) Lista de incidentes importantes (para justificar el trabajo)
+Reordenamiento de settings/env por errores de inicialización.
+Bugs de urls/imports que tumbaban web/worker (arreglados).
+Migraciones y cambios de modelo causando columnas faltantes (arreglado con flujo correcto de migrations).
+Configuración de correo: console backend → Brevo SMTP real, con pruebas y entrega confirmada.
+Error crítico de Docker storage (overlayfs metadata.db I/O error) — infra — solucionado.
+Ajustes iterativos para que el flujo cliente/admin sea fiel al negocio (orden, PDF, email, dashboard, calendario).
+
+
+Si quieres, te lo convierto en formato “Project Update” para tu jefe (1–2 páginas, con bullets ejecutivos + risks + next steps), o en lista de tareas Asana con estados (Done / In Progress / Blocked / Next).

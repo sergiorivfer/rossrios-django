@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>My Orders</title>
+    </head>
+    <body>
+
+        {% include "partials/topbar_region.html" %}
+        <h1>My Orders</h1>
+
+        <p>Logueado como: {{ request.user.username }}</p>
+
+        <p>
+        <a href="{% url 'make_order' %}">Create new order</a> |
+        <a href="{% url 'logout' %}">Logout</a>
+        </p>
+
+        <hr />
+
+        {% if orders %}
+        <ul>
+            {% for o in orders %}
+            <li>
+                <b>{{ o.order_name }}</b> —
+                {{ o.get_status_display }} —
+                Due: {{ o.due_date }} —
+                {{ o.get_region_display }}
+                |
+                <a href="{% url 'order_detail' public_id=o.public_id %}">View</a>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p>No orders yet.</p>
+        {% endif %}
+    </body>
+</html>

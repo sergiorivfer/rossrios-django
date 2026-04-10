@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+    
+
+    <head>
+        <meta charset="utf-8">
+        <title>Make Order</title>
+    </head>
+    <body>
+
+        {% include "partials/topbar_region.html" %}
+
+        <h1>Make an Order (cliente)</h1>
+
+        <p>Logueado como: {{ request.user.username }}</p>
+        <p><a href="{% url 'logout' %}">Salir</a></p>
+
+        {% if messages %}
+        <ul>
+            {% for m in messages %}<li>{{ m }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        {{ form.as_p }}
+        <button type="submit">Crear orden</button>
+        </form>
+    </body>
+</html>
