@@ -131,4 +131,5 @@ ADMIN_ORDER_EMAILS = [
     x.strip() for x in os.getenv("ADMIN_ORDER_EMAILS", "").split(",") if x.strip()
 ]
 
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=["http://localhost"])
 
